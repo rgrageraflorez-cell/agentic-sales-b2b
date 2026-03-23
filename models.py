@@ -4,7 +4,7 @@ from __future__ import annotations
 from datetime import datetime
 from enum import Enum
 from typing import Optional
-from pydantic import BaseModel, EmailStr, Field
+from pydantic import BaseModel, EmailStr, Field, PrivateAttr
 
 
 # ─── Enums ────────────────────────────────────────────────────
@@ -104,11 +104,9 @@ class Company(BaseModel):
     google_reviews: Optional[int] = None
 
     # Atributos dinámicos v2 (añadidos por agentes nuevos)
-    _signals_data: dict = Field(default_factory=dict, exclude=True)
-    _diagnostic: dict = Field(default_factory=dict, exclude=True)
-    _role_strategy: dict = Field(default_factory=dict, exclude=True)
-
-    model_config = {"arbitrary_types_allowed": True}
+    _signals_data: dict = PrivateAttr(default_factory=dict)
+    _diagnostic: dict = PrivateAttr(default_factory=dict)
+    _role_strategy: dict = PrivateAttr(default_factory=dict)
 
 
 class ClusterProfile(BaseModel):

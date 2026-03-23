@@ -18,5 +18,5 @@ COPY . .
 ENV PORT=8080
 EXPOSE 8080
 
-# Ejecutar el orquestador
-ENTRYPOINT ["python", "-m", "agents.orchestrator"]
+# Ejecutar el servidor HTTP (Cloud Run) o el CLI
+CMD ["python", "server.py"]

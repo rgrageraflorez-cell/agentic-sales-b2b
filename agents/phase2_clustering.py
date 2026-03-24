@@ -192,8 +192,12 @@ class SegmenterAgent(BaseAgent):
         """Segmenta empresas en clusters."""
         self.log_step("Segmentando empresas", f"{len(companies)} empresas → {self.n_clusters} clusters")
 
+        if len(companies) == 0:
+            self.log_step("Segmentación omitida", "No hay empresas para segmentar")
+            return companies, []
+
         if len(companies) < self.n_clusters:
-            self.n_clusters = max(2, len(companies) // 2)
+            self.n_clusters = max(1, len(companies) // 2) if len(companies) > 1 else 1
 
         # Paso 1: Vectorizar empresas
         features, feature_names = self._vectorize(companies)

@@ -35,56 +35,77 @@ class BaseAgent(ABC):
         temperature: float = 0.3,
         response_format: str = "text",
     ) -> str | dict:
-        """Llamada al LLM (Anthropic Claude por defecto)."""
-        try:
-            import anthropic
+        """Llamada al LLM. Prioridad: Anthropic → Gemini → OpenAI."""
+        anthropic_key = os.getenv("ANTHROPIC_API_KEY")
+        gemini_key = os.getenv("GEMINI_API_KEY")
 
-            client = anthropic.Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
+        if anthropic_key:
+            try:
+                import anthropic
+                client = anthropic.Anthropic(api_key=anthropic_key)
+                kwargs = {
+                    "model": model,
+                    "max_tokens": max_tokens,
+                    "temperature": temperature,
+                    "messages": [{"role": "user", "content": prompt}],
+                }
+                if system:
+                    kwargs["system"] = system
+                response = client.messages.create(**kwargs)
+                text = response.content[0].text
+                return self._parse_response(text, response_format)
+            except Exception as e:
+                if "credit" in str(e).lower() or "balance" in str(e).lower():
+                    self.logger.warning("Sin créditos Anthropic → usando Gemini")
+                elif "ImportError" not in type(e).__name__:
+                    self.logger.warning(f"Error Anthropic: {e} → usando Gemini")
 
-            messages = [{"role": "user", "content": prompt}]
-            
-            kwargs = {
-                "model": model,
-                "max_tokens": max_tokens,
-                "temperature": temperature,
-                "messages": messages,
-            }
-            if system:
-                kwargs["system"] = system
+        if gemini_key:
+            return await self._gemini_fallback(prompt, system, max_tokens, temperature, response_format)
 
-            response = client.messages.create(**kwargs)
-            text = response.content[0].text
+        return await self._openai_fallback(prompt, system, max_tokens, temperature, response_format)
 
-            if response_format == "json":
-                # Intentar parsear JSON del response
-                text = text.strip()
-                if text.startswith("```json"):
-                    text = text[7:]
-                if text.startswith("```"):
-                    text = text[3:]
-                if text.endswith("```"):
-                    text = text[:-3]
-                return json.loads(text.strip())
+    def _parse_response(self, text: str, response_format: str) -> str | dict:
+        """Parsea la respuesta del LLM según el formato esperado."""
+        if response_format == "json":
+            text = text.strip()
+            if text.startswith("```json"):
+                text = text[7:]
+            if text.startswith("```"):
+                text = text[3:]
+            if text.endswith("```"):
+                text = text[:-3]
+            return json.loads(text.strip())
+        return text
 
-            return text
-
-        except ImportError:
-            self.logger.warning("anthropic no disponible, intentando openai...")
-            return await self._openai_fallback(prompt, system, max_tokens, temperature, response_format)
+    async def _gemini_fallback(
+        self, prompt: str, system: str, max_tokens: int, temperature: float, response_format: str
+    ) -> str | dict:
+        """Fallback a Google Gemini."""
+        import google.generativeai as genai
+        genai.configure(api_key=os.getenv("GEMINI_API_KEY"))
+        model = genai.GenerativeModel(
+            model_name="gemini-1.5-flash",
+            system_instruction=system if system else None,
+            generation_config=genai.GenerationConfig(
+                max_output_tokens=max_tokens,
+                temperature=temperature,
+            ),
+        )
+        response = model.generate_content(prompt)
+        text = response.text
+        return self._parse_response(text, response_format)
 
     async def _openai_fallback(
         self, prompt: str, system: str, max_tokens: int, temperature: float, response_format: str
     ) -> str | dict:
-        """Fallback a OpenAI si Anthropic no está disponible."""
+        """Fallback a OpenAI."""
         import openai
-
         client = openai.OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
-
         messages = []
         if system:
             messages.append({"role": "system", "content": system})
         messages.append({"role": "user", "content": prompt})
-
         response = client.chat.completions.create(
             model="gpt-4o",
             messages=messages,
@@ -92,12 +113,7 @@ class BaseAgent(ABC):
             temperature=temperature,
         )
         text = response.choices[0].message.content
-
-        if response_format == "json":
-            text = text.strip().removeprefix("```json").removeprefix("```").removesuffix("```")
-            return json.loads(text.strip())
-
-        return text
+        return self._parse_response(text, response_format)
 
     def log_step(self, step: str, detail: str = ""):
         """Log un paso del agente."""

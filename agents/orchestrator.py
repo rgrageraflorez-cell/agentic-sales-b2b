@@ -23,6 +23,7 @@ from agents.phase2_clustering import ClassifierAgent, ScorerAgent, SegmenterAgen
 from agents.pre_diagnostic import PreDiagnosticAgent
 from agents.role_personalizer import RolePersonalizerAgent
 from agents.phase3_outreach import CopywriterAgent, SenderAgent, FollowUpAgent
+from agents.humanizer import HumanizerAgent
 from agents.learning_engine import LearningEngineAgent
 
 load_dotenv()
@@ -55,6 +56,7 @@ class Orchestrator:
         )
         self.role_personalizer = RolePersonalizerAgent()
         self.copywriter = CopywriterAgent()
+        self.humanizer = HumanizerAgent()
         self.sender = SenderAgent()
         self.follow_up = FollowUpAgent()
 
@@ -67,7 +69,7 @@ class Orchestrator:
         self.email_drafts: list[EmailDraft] = []
         self.metrics = PipelineMetrics()
 
-        logger.info("Orquestador v2 inicializado con 13 agentes")
+        logger.info("Orquestador v2 inicializado con 14 agentes")
 
     # ─── Fase 1: Recolección ─────────────────────────────────
 
@@ -186,7 +188,10 @@ class Orchestrator:
         # 3.3 Generar emails
         drafts = await self.copywriter.execute(self.companies, self.cluster_profiles)
 
-        # 3.4 Enviar
+        # 3.4 Humanizar (eliminar patrones de escritura IA)
+        drafts = await self.humanizer.execute(drafts)
+
+        # 3.5 Enviar
         sent = await self.sender.execute(drafts, dry_run=dry_run)
         self.metrics.total_emails_sent = len(sent)
 

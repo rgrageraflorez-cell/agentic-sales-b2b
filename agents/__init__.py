@@ -7,6 +7,7 @@ from agents.phase2_clustering import ClassifierAgent, ScorerAgent, SegmenterAgen
 from agents.pre_diagnostic import PreDiagnosticAgent
 from agents.role_personalizer import RolePersonalizerAgent
 from agents.phase3_outreach import CopywriterAgent, SenderAgent, FollowUpAgent
+from agents.humanizer import HumanizerAgent
 from agents.learning_engine import LearningEngineAgent
 from agents.orchestrator import Orchestrator
 
@@ -22,6 +23,7 @@ __all__ = [
     "PreDiagnosticAgent",
     "RolePersonalizerAgent",
     "CopywriterAgent",
+    "HumanizerAgent",
     "SenderAgent",
     "FollowUpAgent",
     "LearningEngineAgent",

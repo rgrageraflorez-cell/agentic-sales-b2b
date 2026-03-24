@@ -21,7 +21,7 @@ class Handler(BaseHTTPRequestHandler):
             self._respond(200, {
                 "service": "ARIGRA Agentic Sales System v2",
                 "status": "running",
-                "agents": 13,
+                "agents": 14,
                 "phases": 4,
                 "endpoints": {
                     "/": "Health check",

@@ -1,8 +1,10 @@
 """Base agent class con integración LLM."""
 
 from __future__ import annotations
+import asyncio
 import json
 import os
+import time
 from abc import ABC, abstractmethod
 from typing import Any
 
@@ -10,6 +12,10 @@ from dotenv import load_dotenv
 from loguru import logger
 
 load_dotenv()
+
+# Rate limiter para Gemini free tier (15 req/min → 1 cada 4s)
+_gemini_last_call: float = 0.0
+_GEMINI_MIN_INTERVAL = 4.0
 
 
 class BaseAgent(ABC):
@@ -81,7 +87,14 @@ class BaseAgent(ABC):
     async def _gemini_fallback(
         self, prompt: str, system: str, max_tokens: int, temperature: float, response_format: str
     ) -> str | dict:
-        """Fallback a Google Gemini."""
+        """Fallback a Google Gemini con rate limiting."""
+        global _gemini_last_call
+        # Respetar el límite del free tier: mínimo 4s entre llamadas
+        elapsed = time.monotonic() - _gemini_last_call
+        if elapsed < _GEMINI_MIN_INTERVAL:
+            await asyncio.sleep(_GEMINI_MIN_INTERVAL - elapsed)
+        _gemini_last_call = time.monotonic()
+
         import google.generativeai as genai
         genai.configure(api_key=os.getenv("GEMINI_API_KEY"))
         model = genai.GenerativeModel(

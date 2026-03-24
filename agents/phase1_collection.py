@@ -195,40 +195,83 @@ class EnricherAgent(BaseAgent):
         return enriched
 
     async def _enrich_from_website(self, company: Company) -> Company:
-        """Extrae información del sitio web de la empresa."""
+        """Extrae información del sitio web escaneando home + páginas de contacto."""
         if not company.website:
             return company
 
-        try:
-            resp = await self.http.get(company.website, headers={"User-Agent": "Mozilla/5.0"})
-            soup = BeautifulSoup(resp.text, "html.parser")
+        from urllib.parse import urlparse, urljoin
+        base_url = company.website
+        company.domain = urlparse(base_url).netloc
 
-            # Extraer dominio
-            from urllib.parse import urlparse
-            company.domain = urlparse(company.website).netloc
+        # Páginas a escanear en orden de prioridad
+        pages_to_scan = [
+            base_url,
+            urljoin(base_url, "/contacto"),
+            urljoin(base_url, "/contact"),
+            urljoin(base_url, "/sobre-nosotros"),
+            urljoin(base_url, "/quienes-somos"),
+            urljoin(base_url, "/about"),
+        ]
 
-            # Extraer descripción (meta description)
-            meta_desc = soup.find("meta", attrs={"name": "description"})
-            if meta_desc and meta_desc.get("content"):
-                company.description = meta_desc["content"][:500]
+        found_emails: list[str] = []
+        found_phones: list[str] = []
+        description_set = False
 
-            # Buscar emails en la página
-            text = soup.get_text()
-            emails = re.findall(r"[\w.+-]+@[\w-]+\.[\w.-]+", text)
-            if emails and not company.email:
-                # Filtrar emails genéricos
-                for email in emails:
-                    if not any(x in email for x in ["example", "test", "noreply"]):
-                        company.email = email
-                        break
+        for url in pages_to_scan:
+            try:
+                resp = await self.http.get(
+                    url,
+                    headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"},
+                    timeout=10,
+                )
+                if resp.status_code != 200:
+                    continue
+                soup = BeautifulSoup(resp.text, "html.parser")
 
-            # Buscar teléfonos
-            phones = re.findall(r"(?:\+34\s?)?(?:9\d{2}|6\d{2})[\s.-]?\d{3}[\s.-]?\d{3}", text)
-            if phones and not company.phone:
-                company.phone = phones[0]
+                # Meta description solo en homepage
+                if url == base_url and not description_set:
+                    meta = soup.find("meta", attrs={"name": "description"})
+                    if meta and meta.get("content"):
+                        company.description = meta["content"][:500]
+                        description_set = True
 
-        except Exception as e:
-            self.logger.debug(f"No se pudo acceder a {company.website}: {e}")
+                # 1. Emails en atributos mailto: (más fiables)
+                for a in soup.find_all("a", href=re.compile(r"^mailto:", re.I)):
+                    email = a["href"].replace("mailto:", "").split("?")[0].strip().lower()
+                    if email and "@" in email:
+                        found_emails.append(email)
+
+                # 2. Emails en el footer (zona de contacto habitual)
+                footer = soup.find("footer")
+                if footer:
+                    footer_text = footer.get_text()
+                    found_emails += re.findall(r"[\w.+-]+@[\w-]+\.[\w.-]+", footer_text)
+
+                # 3. Emails en todo el texto
+                full_text = soup.get_text()
+                found_emails += re.findall(r"[\w.+-]+@[\w-]+\.[\w.-]+", full_text)
+
+                # 4. Teléfonos
+                found_phones += re.findall(
+                    r"(?:\+34\s?)?(?:9\d{2}|6\d{2}|7\d{2})[\s.\-]?\d{3}[\s.\-]?\d{3}", full_text
+                )
+
+            except Exception:
+                continue  # Silencioso — la página puede no existir
+
+        # Filtrar y asignar mejor email
+        if not company.email:
+            skip = {"example", "test", "noreply", "no-reply", "donotreply",
+                    "sentry", "png", "jpg", "gif", "webp", "woff", ".min"}
+            for email in found_emails:
+                email = email.lower().strip()
+                if not any(s in email for s in skip) and len(email) < 80:
+                    company.email = email
+                    break
+
+        # Asignar teléfono si no hay
+        if not company.phone and found_phones:
+            company.phone = found_phones[0]
 
         return company
 

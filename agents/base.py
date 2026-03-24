@@ -87,9 +87,8 @@ class BaseAgent(ABC):
     async def _gemini_fallback(
         self, prompt: str, system: str, max_tokens: int, temperature: float, response_format: str
     ) -> str | dict:
-        """Fallback a Google Gemini con rate limiting."""
+        """Fallback a Google Gemini con rate limiting y retry automático."""
         global _gemini_last_call
-        # Respetar el límite del free tier: mínimo 4s entre llamadas
         elapsed = time.monotonic() - _gemini_last_call
         if elapsed < _GEMINI_MIN_INTERVAL:
             await asyncio.sleep(_GEMINI_MIN_INTERVAL - elapsed)
@@ -97,17 +96,36 @@ class BaseAgent(ABC):
 
         import google.generativeai as genai
         genai.configure(api_key=os.getenv("GEMINI_API_KEY"))
-        model = genai.GenerativeModel(
-            model_name="gemini-2.0-flash",
-            system_instruction=system if system else None,
-            generation_config=genai.GenerationConfig(
-                max_output_tokens=max_tokens,
-                temperature=temperature,
-            ),
-        )
-        response = model.generate_content(prompt)
-        text = response.text
-        return self._parse_response(text, response_format)
+
+        # Intentar con dos modelos (quotas independientes)
+        models_to_try = ["gemini-2.0-flash", "gemini-1.5-flash-8b"]
+        last_error = None
+
+        for model_name in models_to_try:
+            for attempt in range(3):  # Hasta 3 reintentos por modelo
+                try:
+                    model = genai.GenerativeModel(
+                        model_name=model_name,
+                        system_instruction=system if system else None,
+                        generation_config=genai.GenerationConfig(
+                            max_output_tokens=max_tokens,
+                            temperature=temperature,
+                        ),
+                    )
+                    response = model.generate_content(prompt)
+                    _gemini_last_call = time.monotonic()
+                    return self._parse_response(response.text, response_format)
+                except Exception as e:
+                    last_error = e
+                    err_str = str(e).lower()
+                    if "quota" in err_str or "429" in err_str or "rate" in err_str:
+                        wait = _GEMINI_MIN_INTERVAL * (2 ** attempt)  # 4s, 8s, 16s
+                        self.logger.warning(f"Gemini rate limit ({model_name}), reintentando en {wait:.0f}s...")
+                        await asyncio.sleep(wait)
+                    else:
+                        break  # Error no recuperable, probar siguiente modelo
+
+        raise RuntimeError(f"Gemini no disponible tras reintentos: {last_error}")
 
     async def _openai_fallback(
         self, prompt: str, system: str, max_tokens: int, temperature: float, response_format: str

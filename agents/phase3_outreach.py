@@ -144,11 +144,16 @@ class CopywriterAgent(BaseAgent):
         return drafts
 
     def _get_best_email(self, company: Company) -> str:
-        """Obtiene el mejor email de contacto."""
+        """Obtiene el mejor email de contacto. Fallback a info@dominio si hay web."""
         for contact in company.contacts:
             if contact.email and "@" in contact.email:
                 return contact.email
-        return company.email
+        if company.email:
+            return company.email
+        # Fallback: inferir info@dominio cuando hay web pero no email explícito
+        if company.domain:
+            return f"info@{company.domain}"
+        return ""
 
     async def _generate_email(
         self,

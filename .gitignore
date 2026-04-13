@@ -30,3 +30,6 @@ Thumbs.db
 # Logs
 *.log
 .Rhistory
+
+# Tokens/credentials
+token.txt

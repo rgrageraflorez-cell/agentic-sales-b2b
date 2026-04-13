@@ -295,14 +295,14 @@ class Orchestrator:
         """Guarda el estado de las empresas."""
         path = self.data_dir / filename
         data = [c.model_dump(mode="json") for c in self.companies]
-        path.write_text(json.dumps(data, ensure_ascii=False, indent=2, default=str))
+        path.write_text(json.dumps(data, ensure_ascii=False, indent=2, default=str), encoding="utf-8")
         logger.debug(f"Estado guardado: {path}")
 
     def _load_state(self, filename: str):
         """Carga el estado de las empresas."""
         path = self.data_dir / filename
         if path.exists():
-            data = json.loads(path.read_text())
+            data = json.loads(path.read_text(encoding="utf-8"))
             self.companies = [Company(**d) for d in data]
             logger.debug(f"Estado cargado: {len(self.companies)} empresas desde {path}")
 
@@ -310,26 +310,26 @@ class Orchestrator:
         """Guarda perfiles de cluster."""
         path = self.data_dir / filename
         data = [p.model_dump(mode="json") for p in self.cluster_profiles]
-        path.write_text(json.dumps(data, ensure_ascii=False, indent=2))
+        path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
 
     def _load_profiles(self, filename: str):
         """Carga perfiles de cluster."""
         path = self.data_dir / filename
         if path.exists():
-            data = json.loads(path.read_text())
+            data = json.loads(path.read_text(encoding="utf-8"))
             self.cluster_profiles = [ClusterProfile(**d) for d in data]
 
     def _save_drafts(self, filename: str):
         """Guarda borradores de email."""
         path = self.data_dir / filename
         data = [d.model_dump(mode="json") for d in self.email_drafts]
-        path.write_text(json.dumps(data, ensure_ascii=False, indent=2, default=str))
+        path.write_text(json.dumps(data, ensure_ascii=False, indent=2, default=str), encoding="utf-8")
 
     def _load_drafts(self, filename: str):
         """Carga borradores de email."""
         path = self.data_dir / filename
         if path.exists():
-            data = json.loads(path.read_text())
+            data = json.loads(path.read_text(encoding="utf-8"))
             self.email_drafts = [EmailDraft(**d) for d in data]
 
     def _print_metrics(self):

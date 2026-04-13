@@ -9,10 +9,7 @@ from __future__ import annotations
 import asyncio
 import os
 import random
-import smtplib
 from datetime import datetime, timedelta
-from email.mime.multipart import MIMEMultipart
-from email.mime.text import MIMEText
 from typing import Any
 
 from dotenv import load_dotenv
@@ -285,17 +282,14 @@ Devuelve SOLO JSON:
 # ─── Agente Sender ───────────────────────────────────────────
 
 class SenderAgent(BaseAgent):
-    """Envía emails con rate limiting y rotación de firmantes."""
+    """Envía emails con Resend (free tier: 100/día, 3000/mes) y rate limiting."""
 
     def __init__(self):
         super().__init__(
             name="Sender",
-            description="Envío de emails con control de velocidad",
+            description="Envío de emails con Resend y control de velocidad",
         )
-        self.smtp_host = os.getenv("SMTP_HOST", "smtp.gmail.com")
-        self.smtp_port = int(os.getenv("SMTP_PORT", "587"))
-        self.smtp_user = os.getenv("SMTP_USER", "")
-        self.smtp_password = os.getenv("SMTP_PASSWORD", "")
+        self.resend_api_key = os.getenv("RESEND_API_KEY", "")
 
         self.max_per_day = int(os.getenv("MAX_EMAILS_PER_DAY", "50"))
         self.max_per_hour = int(os.getenv("MAX_EMAILS_PER_HOUR", "15"))
@@ -352,26 +346,26 @@ class SenderAgent(BaseAgent):
         return sent_drafts
 
     async def _send_email(self, draft: EmailDraft) -> bool:
-        """Envía un email via SMTP."""
+        """Envía un email via Resend API."""
         try:
-            sender_email = os.getenv("SENDER_EMAIL", self.smtp_user)
+            import resend
+
+            resend.api_key = self.resend_api_key
+
+            sender_email = os.getenv("SENDER_EMAIL", "onboarding@resend.dev")
             sender_name = os.getenv("SENDER_NAME", "ARIGRA")
 
-            msg = MIMEMultipart("alternative")
-            msg["Subject"] = draft.subject
-            msg["From"] = f"{sender_name} <{sender_email}>"
-            msg["To"] = draft.recipient_email
-            msg["Reply-To"] = sender_email
+            params = {
+                "from": f"{sender_name} <{sender_email}>",
+                "to": [draft.recipient_email],
+                "subject": draft.subject,
+                "html": draft.body_html,
+                "text": draft.body_text,
+                "reply_to": sender_email,
+            }
 
-            msg.attach(MIMEText(draft.body_text, "plain", "utf-8"))
-            msg.attach(MIMEText(draft.body_html, "html", "utf-8"))
-
-            with smtplib.SMTP(self.smtp_host, self.smtp_port) as server:
-                server.starttls()
-                server.login(self.smtp_user, self.smtp_password)
-                server.send_message(msg)
-
-            self.log_step("Enviado", f"→ {draft.recipient_email}")
+            email = resend.Emails.send(params)
+            self.log_step("Enviado", f"→ {draft.recipient_email} (id: {email.get('id', '?')})")
             return True
 
         except Exception as e:

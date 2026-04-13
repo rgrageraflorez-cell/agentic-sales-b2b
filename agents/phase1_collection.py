@@ -1,15 +1,17 @@
 """
-Fase 1: Agentes de recolección de datos.
-- ScraperAgent: Busca empresas en múltiples fuentes
-- EnricherAgent: Enriquece los datos con información adicional
+Fase 1: Agentes de recolección de datos (versión agéntica).
+- ScraperAgent: Busca empresas autónomamente en internet (DuckDuckGo)
+- EnricherAgent: Visita webs y extrae datos con LLM
 - ValidatorAgent: Limpia, valida y deduplica
 """
 
 from __future__ import annotations
 import hashlib
+import os
 import re
 from datetime import datetime
 from typing import Any
+from urllib.parse import urlparse, urljoin
 
 import httpx
 from bs4 import BeautifulSoup
@@ -18,146 +20,145 @@ from agents.base import BaseAgent
 from models import Company, CompanySize, ContactPerson, LeadStatus, Sector
 
 
-# ─── Agente Scraper ──────────────────────────────────────────
+# ─── Agente Scraper (Agéntico) ──────────────────────────────────
 
 class ScraperAgent(BaseAgent):
-    """Busca empresas en múltiples fuentes de datos."""
+    """Busca empresas autónomamente en internet usando DuckDuckGo."""
 
     def __init__(self):
         super().__init__(
             name="Scraper",
-            description="Recopila datos de empresas desde Google Maps, directorios y la web",
+            description="Busca empresas en internet de forma autónoma (DuckDuckGo + LLM)",
         )
         self.http = httpx.AsyncClient(timeout=30, follow_redirects=True)
+
+    # Dominios que nunca son empresas reales
+    BLOCKED_DOMAINS = {
+        "wikipedia.org", "gov.br", "gov.es", "gob.es", "boe.es",
+        "facebook.com", "twitter.com", "instagram.com", "linkedin.com",
+        "youtube.com", "tiktok.com", "reddit.com", "amazon.com",
+        "google.com", "bing.com", "yahoo.com",
+        "elpais.com", "elmundo.es", "abc.es", "lavanguardia.com",
+        "tripadvisor.com", "yelp.com",
+    }
 
     async def execute(
         self,
         query: str = "empresas tecnología Madrid",
         sources: list[str] | None = None,
-        max_results: int = 100,
+        max_results: int = 30,
     ) -> list[Company]:
-        """Ejecuta el scraping en las fuentes configuradas."""
-        sources = sources or ["google_maps", "web_directories"]
-        all_companies: list[Company] = []
+        """Busca empresas en internet usando DuckDuckGo."""
+        self.log_step("Buscando empresas en internet", query)
 
-        for source in sources:
-            self.log_step(f"Scrapeando fuente: {source}", query)
-            try:
-                if source == "google_maps":
-                    companies = await self._scrape_google_maps(query, max_results)
-                elif source == "web_directories":
-                    companies = await self._scrape_directories(query, max_results)
-                elif source == "linkedin":
-                    companies = await self._scrape_linkedin(query, max_results)
-                else:
-                    self.logger.warning(f"Fuente desconocida: {source}")
-                    continue
+        # Paso 1: Buscar con múltiples queries para más cobertura
+        all_results = []
+        queries = self._build_search_queries(query)
+        for q in queries:
+            results = self._search_web(q, max_results)
+            all_results.extend(results)
 
-                for c in companies:
-                    c.source = source
-                    c.scraped_at = datetime.now()
-                    c.id = self._generate_id(c)
-                all_companies.extend(companies)
+        # Deduplicar por URL
+        seen_urls = set()
+        raw_results = []
+        for r in all_results:
+            url = r.get("href", "")
+            if url and url not in seen_urls:
+                seen_urls.add(url)
+                raw_results.append(r)
 
-            except Exception as e:
-                self.logger.error(f"Error scrapeando {source}: {e}")
+        self.log_step("Resultados de búsqueda", f"{len(raw_results)} URLs encontradas")
 
-        self.log_step("Scraping completado", f"{len(all_companies)} empresas encontradas")
-        return all_companies
-
-    async def _scrape_google_maps(self, query: str, max_results: int) -> list[Company]:
-        """
-        Scraping via Google Maps / Places API.
-        Requiere GOOGLE_MAPS_API_KEY en .env.
-        Si no hay API key, usa scraping web como fallback.
-        """
-        import os
-        api_key = os.getenv("GOOGLE_MAPS_API_KEY")
-
-        if api_key:
-            return await self._google_places_api(query, max_results, api_key)
-
-        # Fallback: generar estructura para búsqueda manual
-        self.logger.info("Sin Google Maps API key — usando búsqueda web genérica")
-        return await self._web_search_fallback(query, max_results)
-
-    async def _google_places_api(self, query: str, max_results: int, api_key: str) -> list[Company]:
-        """Usa Google Places API para buscar empresas."""
+        # Paso 2: Filtrar dominios bloqueados y convertir en empresas
         companies = []
-        url = "https://maps.googleapis.com/maps/api/place/textsearch/json"
-        params = {"query": query, "key": api_key, "language": "es"}
+        for result in raw_results:
+            url = result.get("href", "")
+            domain = urlparse(url).netloc if url else ""
 
-        resp = await self.http.get(url, params=params)
-        data = resp.json()
+            # Filtrar dominios bloqueados
+            if any(blocked in domain for blocked in self.BLOCKED_DOMAINS):
+                continue
 
-        for result in data.get("results", [])[:max_results]:
             company = Company(
-                name=result.get("name", ""),
-                address=result.get("formatted_address", ""),
-                google_rating=result.get("rating"),
-                google_reviews=result.get("user_ratings_total"),
+                name=result.get("title", "").strip(),
+                website=url,
+                description=result.get("body", "")[:500],
+                domain=domain,
             )
-            # Obtener detalles adicionales
-            place_id = result.get("place_id")
-            if place_id:
-                detail = await self._get_place_details(place_id, api_key)
-                company.phone = detail.get("phone", "")
-                company.website = detail.get("website", "")
-            companies.append(company)
+            if company.name and len(company.name) > 2:
+                company.id = self._generate_id(company)
+                company.source = "duckduckgo"
+                company.scraped_at = datetime.now()
+                companies.append(company)
 
-        return companies
+        # Paso 3: Filtrar con LLM — quedarnos solo con empresas reales del sector buscado
+        if companies:
+            companies = await self._filter_real_companies(companies, query)
 
-    async def _get_place_details(self, place_id: str, api_key: str) -> dict:
-        """Obtiene detalles de un lugar de Google Places."""
-        url = "https://maps.googleapis.com/maps/api/place/details/json"
-        params = {
-            "place_id": place_id,
-            "key": api_key,
-            "fields": "formatted_phone_number,website,url",
-        }
-        resp = await self.http.get(url, params=params)
-        result = resp.json().get("result", {})
-        return {
-            "phone": result.get("formatted_phone_number", ""),
-            "website": result.get("website", ""),
-        }
+        self.log_step("Scraping completado", f"{len(companies)} empresas encontradas")
+        return companies[:max_results]
 
-    async def _web_search_fallback(self, query: str, max_results: int) -> list[Company]:
-        """Fallback: scraping de directorios web públicos."""
-        # Ejemplo con Páginas Amarillas o similar
-        companies = []
-        search_url = f"https://www.paginasamarillas.es/search/{query.replace(' ', '-')}"
+    def _build_search_queries(self, base_query: str) -> list[str]:
+        """Genera variaciones de búsqueda para encontrar más empresas."""
+        queries = [base_query]
+        # Añadir variaciones si la query no es muy larga
+        if len(base_query.split()) <= 6:
+            queries.append(f"{base_query} contacto email")
+            queries.append(f"{base_query} directorio empresas")
+        return queries
+
+    def _search_web(self, query: str, max_results: int) -> list[dict]:
+        """Busca en DuckDuckGo y devuelve resultados."""
+        try:
+            from ddgs import DDGS
+            with DDGS() as ddgs:
+                results = list(ddgs.text(query, max_results=max_results * 2, region="es-es"))
+                return results
+        except ImportError:
+            # Fallback al paquete antiguo
+            try:
+                from duckduckgo_search import DDGS
+                with DDGS() as ddgs:
+                    results = list(ddgs.text(query, max_results=max_results * 2, region="es-es"))
+                    return results
+            except Exception as e:
+                self.logger.error(f"Error en búsqueda DuckDuckGo: {e}")
+                return []
+        except Exception as e:
+            self.logger.error(f"Error en búsqueda DuckDuckGo: {e}")
+            return []
+
+    async def _filter_real_companies(self, companies: list[Company], query: str) -> list[Company]:
+        """Usa LLM para filtrar: quedarnos solo con empresas reales del sector."""
+        names_list = "\n".join([
+            f"{i+1}. {c.name} | {c.website} | {c.description[:100]}"
+            for i, c in enumerate(companies[:40])
+        ])
+
+        prompt = f"""Analiza esta lista de resultados de búsqueda para la query "{query}".
+Identifica cuáles son empresas REALES y privadas (NO páginas de gobierno, artículos de prensa,
+blogs, directorios genéricos, Wikipedia, o páginas informativas).
+
+Solo incluye empresas que:
+- Tienen un sitio web corporativo propio
+- Operan como negocio real (venden productos o servicios)
+- Son relevantes para la búsqueda
+
+Resultados:
+{names_list}
+
+Devuelve SOLO un JSON con los NÚMEROS de los resultados que son empresas reales:
+{{"indices": [1, 3, 5]}}"""
 
         try:
-            resp = await self.http.get(search_url, headers={"User-Agent": "Mozilla/5.0"})
-            soup = BeautifulSoup(resp.text, "html.parser")
-
-            for listing in soup.select(".listado-item")[:max_results]:
-                name_el = listing.select_one(".nombre-empresa")
-                phone_el = listing.select_one(".telefono")
-                addr_el = listing.select_one(".direccion")
-
-                if name_el:
-                    companies.append(Company(
-                        name=name_el.get_text(strip=True),
-                        phone=phone_el.get_text(strip=True) if phone_el else "",
-                        address=addr_el.get_text(strip=True) if addr_el else "",
-                    ))
+            result = await self.llm_call(prompt, response_format="json", temperature=0.1)
+            valid_indices = set(result.get("indices", []))
+            if valid_indices:
+                return [c for i, c in enumerate(companies[:40]) if (i + 1) in valid_indices]
         except Exception as e:
-            self.logger.warning(f"Web search fallback falló: {e}")
+            self.logger.warning(f"Error filtrando empresas con LLM: {e}")
 
         return companies
-
-    async def _scrape_directories(self, query: str, max_results: int) -> list[Company]:
-        """Scraping de directorios empresariales (e-informa, axesor, etc.)."""
-        # Placeholder — cada directorio requiere su propia implementación
-        self.logger.info("Directorio scraping: implementar según fuentes específicas")
-        return []
-
-    async def _scrape_linkedin(self, query: str, max_results: int) -> list[Company]:
-        """Scraping de LinkedIn (requiere cookies o API)."""
-        self.logger.info("LinkedIn scraping: requiere configuración de auth")
-        return []
 
     def _generate_id(self, company: Company) -> str:
         """Genera un ID único para la empresa."""
@@ -165,27 +166,34 @@ class ScraperAgent(BaseAgent):
         return hashlib.sha256(raw.encode()).hexdigest()[:16]
 
 
-# ─── Agente Enriquecedor ─────────────────────────────────────
+# ─── Agente Enriquecedor (Agéntico) ─────────────────────────────
 
 class EnricherAgent(BaseAgent):
-    """Enriquece los datos de empresas con información adicional."""
+    """Visita las webs de las empresas y extrae datos con LLM."""
 
     def __init__(self):
         super().__init__(
             name="Enriquecedor",
-            description="Enriquece datos: website, empleados, sector, contactos clave",
+            description="Visita webs corporativas y extrae datos con LLM",
         )
-        self.http = httpx.AsyncClient(timeout=20, follow_redirects=True)
+        self.http = httpx.AsyncClient(
+            timeout=15,
+            follow_redirects=True,
+            headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"},
+        )
 
     async def execute(self, companies: list[Company]) -> list[Company]:
-        """Enriquece una lista de empresas."""
+        """Enriquece cada empresa visitando su web y extrayendo datos."""
         enriched = []
         for i, company in enumerate(companies):
             self.log_step(f"Enriqueciendo {i+1}/{len(companies)}", company.name)
             try:
-                company = await self._enrich_from_website(company)
+                # Paso 1: Visitar web y extraer texto + emails + teléfonos
+                company = await self._scan_website(company)
+
+                # Paso 2: LLM analiza todo el contexto y clasifica
                 company = await self._classify_with_llm(company)
-                company = await self._find_contacts(company)
+
                 company.status = LeadStatus.ENRICHED
                 company.last_updated = datetime.now()
             except Exception as e:
@@ -194,96 +202,104 @@ class EnricherAgent(BaseAgent):
 
         return enriched
 
-    async def _enrich_from_website(self, company: Company) -> Company:
-        """Extrae información del sitio web escaneando home + páginas de contacto."""
+    async def _scan_website(self, company: Company) -> Company:
+        """Visita la web de la empresa y extrae emails, teléfonos, descripción."""
         if not company.website:
             return company
 
-        from urllib.parse import urlparse, urljoin
-        base_url = company.website
+        base_url = company.website.rstrip("/")
         company.domain = urlparse(base_url).netloc
 
         # Páginas a escanear en orden de prioridad
         pages_to_scan = [
             base_url,
-            urljoin(base_url, "/contacto"),
-            urljoin(base_url, "/contact"),
-            urljoin(base_url, "/sobre-nosotros"),
-            urljoin(base_url, "/quienes-somos"),
-            urljoin(base_url, "/about"),
+            urljoin(base_url + "/", "contacto"),
+            urljoin(base_url + "/", "contact"),
+            urljoin(base_url + "/", "contactanos"),
+            urljoin(base_url + "/", "sobre-nosotros"),
+            urljoin(base_url + "/", "quienes-somos"),
+            urljoin(base_url + "/", "about"),
+            urljoin(base_url + "/", "about-us"),
         ]
 
         found_emails: list[str] = []
         found_phones: list[str] = []
-        description_set = False
+        all_text = ""
 
         for url in pages_to_scan:
             try:
-                resp = await self.http.get(
-                    url,
-                    headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"},
-                    timeout=10,
-                )
+                resp = await self.http.get(url, timeout=10)
                 if resp.status_code != 200:
                     continue
                 soup = BeautifulSoup(resp.text, "html.parser")
 
-                # Meta description solo en homepage
-                if url == base_url and not description_set:
+                # Meta description solo de la home
+                if url == base_url and not company.description:
                     meta = soup.find("meta", attrs={"name": "description"})
                     if meta and meta.get("content"):
                         company.description = meta["content"][:500]
-                        description_set = True
 
-                # 1. Emails en atributos mailto: (más fiables)
+                # Emails en mailto: (más fiables)
                 for a in soup.find_all("a", href=re.compile(r"^mailto:", re.I)):
                     email = a["href"].replace("mailto:", "").split("?")[0].strip().lower()
                     if email and "@" in email:
                         found_emails.append(email)
 
-                # 2. Emails en el footer (zona de contacto habitual)
+                # Emails en footer
                 footer = soup.find("footer")
                 if footer:
-                    footer_text = footer.get_text()
-                    found_emails += re.findall(r"[\w.+-]+@[\w-]+\.[\w.-]+", footer_text)
+                    found_emails += re.findall(r"[\w.+-]+@[\w-]+\.[\w.-]+", footer.get_text())
 
-                # 3. Emails en todo el texto
-                full_text = soup.get_text()
-                found_emails += re.findall(r"[\w.+-]+@[\w-]+\.[\w.-]+", full_text)
+                # Emails en todo el texto
+                page_text = soup.get_text(separator=" ", strip=True)
+                found_emails += re.findall(r"[\w.+-]+@[\w-]+\.[\w.-]+", page_text)
 
-                # 4. Teléfonos
+                # Teléfonos (España)
                 found_phones += re.findall(
-                    r"(?:\+34\s?)?(?:9\d{2}|6\d{2}|7\d{2})[\s.\-]?\d{3}[\s.\-]?\d{3}", full_text
+                    r"(?:\+34\s?)?(?:9\d{2}|6\d{2}|7\d{2})[\s.\-]?\d{3}[\s.\-]?\d{3}", page_text
                 )
 
-            except Exception:
-                continue  # Silencioso — la página puede no existir
+                # Acumular texto para que el LLM lo analice
+                all_text += f"\n--- {url} ---\n{page_text[:2000]}"
 
-        # Filtrar y asignar mejor email
+            except Exception:
+                continue
+
+        # Filtrar y asignar email
         if not company.email:
             skip = {"example", "test", "noreply", "no-reply", "donotreply",
-                    "sentry", "png", "jpg", "gif", "webp", "woff", ".min"}
+                    "sentry", "png", "jpg", "gif", "webp", "woff", ".min", ".css", ".js"}
             for email in found_emails:
                 email = email.lower().strip()
-                if not any(s in email for s in skip) and len(email) < 80:
+                if not any(s in email for s in skip) and len(email) < 80 and "." in email.split("@")[-1]:
                     company.email = email
                     break
 
-        # Asignar teléfono si no hay
+        # Asignar teléfono
         if not company.phone and found_phones:
             company.phone = found_phones[0]
+
+        # Guardar texto para el LLM
+        company._web_text = all_text[:4000]
 
         return company
 
     async def _classify_with_llm(self, company: Company) -> Company:
-        """Usa LLM para clasificar sector, tamaño estimado, etc."""
-        prompt = f"""Analiza esta empresa y devuelve un JSON con la clasificación:
+        """LLM analiza el texto de la web y extrae datos estructurados."""
+        web_text = getattr(company, "_web_text", "")
+        if not web_text and not company.description:
+            return company
+
+        prompt = f"""Analiza esta empresa basándote en el texto de su web y devuelve un JSON.
 
 Empresa: {company.name}
 Web: {company.website}
-Descripción: {company.description}
-Dirección: {company.address}, {company.city}
-Productos/servicios conocidos: {', '.join(company.products_services) if company.products_services else 'desconocidos'}
+Email encontrado: {company.email or 'no encontrado'}
+Teléfono encontrado: {company.phone or 'no encontrado'}
+Descripción actual: {company.description or 'ninguna'}
+
+Texto extraído de su web:
+{web_text[:3000]}
 
 Devuelve SOLO un JSON con este formato exacto:
 {{
@@ -292,18 +308,19 @@ Devuelve SOLO un JSON con este formato exacto:
     "estimated_revenue": 500000,
     "products_services": ["servicio1", "servicio2"],
     "technologies": ["tech1", "tech2"],
-    "pain_points": ["posible punto de dolor 1", "punto de dolor 2"],
-    "description_enriched": "Descripción breve enriquecida de la empresa"
+    "pain_points": ["punto de dolor 1", "punto de dolor 2"],
+    "description_enriched": "Descripción breve y concisa de la empresa",
+    "email_from_web": "email@empresa.com o null si no encontrado",
+    "city": "ciudad donde opera"
 }}"""
 
         try:
             result = await self.llm_call(prompt, response_format="json", temperature=0.2)
 
             sector_map = {s.value: s for s in Sector}
-            sector_str = result.get("sector", "otro")
-            company.sector = sector_map.get(sector_str, Sector.OTHER)
+            company.sector = sector_map.get(result.get("sector", "otro"), Sector.OTHER)
 
-            emp = result.get("estimated_employees", 0)
+            emp = result.get("estimated_employees") or 0
             if emp < 10:
                 company.size = CompanySize.MICRO
             elif emp < 50:
@@ -322,38 +339,20 @@ Devuelve SOLO un JSON con este formato exacto:
             if result.get("description_enriched"):
                 company.description = result["description_enriched"]
 
+            if result.get("city"):
+                company.city = result["city"]
+
+            # Si el LLM encontró un email que no teníamos
+            llm_email = result.get("email_from_web")
+            if llm_email and llm_email != "null" and not company.email:
+                company.email = llm_email
+
         except Exception as e:
             self.logger.warning(f"Error en clasificación LLM para {company.name}: {e}")
 
-        return company
-
-    async def _find_contacts(self, company: Company) -> Company:
-        """Intenta encontrar contactos clave de la empresa."""
-        if not company.domain:
-            return company
-
-        # Aquí se integrarían APIs como Apollo, Hunter.io, etc.
-        # Placeholder: buscar en el sitio web
-        prompt = f"""Basándote en esta empresa, sugiere los roles clave a contactar:
-Empresa: {company.name}
-Sector: {company.sector}
-Tamaño: {company.size}
-Nuestros servicios: {os.getenv('COMPANY_SERVICES', 'consultoría tecnológica')}
-
-Devuelve SOLO un JSON con formato:
-[
-    {{"name": "", "role": "CEO/CTO/Director Comercial/etc", "email_pattern": "nombre@{company.domain}"}}
-]"""
-        try:
-            import os
-            result = await self.llm_call(prompt, response_format="json", temperature=0.2)
-            for contact_data in result:
-                company.contacts.append(ContactPerson(
-                    role=contact_data.get("role", ""),
-                    email=contact_data.get("email_pattern", ""),
-                ))
-        except Exception:
-            pass
+        # Limpiar atributo temporal
+        if hasattr(company, "_web_text"):
+            del company._web_text
 
         return company
 
@@ -373,13 +372,9 @@ class ValidatorAgent(BaseAgent):
         """Valida y limpia la lista de empresas."""
         self.log_step("Iniciando validación", f"{len(companies)} empresas")
 
-        # Paso 1: Limpieza de datos
         companies = [self._clean_company(c) for c in companies]
-
-        # Paso 2: Deduplicación
         companies = self._deduplicate(companies)
 
-        # Paso 3: Validación de campos críticos
         valid = []
         for c in companies:
             if self._is_valid(c):
@@ -392,38 +387,30 @@ class ValidatorAgent(BaseAgent):
         return valid
 
     def _clean_company(self, c: Company) -> Company:
-        """Limpia los datos de una empresa."""
         c.name = c.name.strip().title() if c.name else ""
         c.email = c.email.strip().lower() if c.email else ""
         c.phone = re.sub(r"[^\d+]", "", c.phone) if c.phone else ""
         c.website = c.website.strip().rstrip("/") if c.website else ""
-
         if c.website and not c.website.startswith("http"):
             c.website = f"https://{c.website}"
-
         return c
 
     def _deduplicate(self, companies: list[Company]) -> list[Company]:
-        """Elimina duplicados basándose en nombre normalizado + dominio."""
         seen: dict[str, Company] = {}
         for c in companies:
             key = self._dedup_key(c)
             if key not in seen:
                 seen[key] = c
             else:
-                # Merge: quedarse con el que tenga más datos
-                existing = seen[key]
-                seen[key] = self._merge(existing, c)
+                seen[key] = self._merge(seen[key], c)
         return list(seen.values())
 
     def _dedup_key(self, c: Company) -> str:
-        """Genera una clave de deduplicación."""
         name = re.sub(r"[^a-z0-9]", "", c.name.lower())
         domain = c.domain or ""
         return f"{name}:{domain}"
 
     def _merge(self, a: Company, b: Company) -> Company:
-        """Fusiona dos registros de la misma empresa."""
         for field in a.model_fields:
             val_a = getattr(a, field)
             val_b = getattr(b, field)
@@ -432,7 +419,6 @@ class ValidatorAgent(BaseAgent):
         return a
 
     def _is_valid(self, c: Company) -> bool:
-        """Verifica si la empresa tiene datos mínimos para continuar."""
         has_name = bool(c.name and len(c.name) > 2)
         has_contact = bool(c.email or c.phone or c.website)
         return has_name and has_contact

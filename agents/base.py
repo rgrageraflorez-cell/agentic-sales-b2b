@@ -1,10 +1,8 @@
 """Base agent class con integración LLM."""
 
 from __future__ import annotations
-import asyncio
 import json
 import os
-import time
 from abc import ABC, abstractmethod
 from typing import Any
 
@@ -12,10 +10,6 @@ from dotenv import load_dotenv
 from loguru import logger
 
 load_dotenv()
-
-# Rate limiter para Gemini free tier (15 req/min → 1 cada 4s)
-_gemini_last_call: float = 0.0
-_GEMINI_MIN_INTERVAL = 4.0
 
 
 class BaseAgent(ABC):
@@ -36,21 +30,29 @@ class BaseAgent(ABC):
         self,
         prompt: str,
         system: str = "",
-        model: str = "claude-sonnet-4-20250514",
+        model: str = "",
         max_tokens: int = 4096,
         temperature: float = 0.3,
         response_format: str = "text",
     ) -> str | dict:
-        """Llamada al LLM. Prioridad: Anthropic → Gemini → OpenAI."""
+        """Llamada al LLM. Prioridad: Groq → Anthropic → OpenAI."""
+        groq_key = os.getenv("GROQ_API_KEY")
         anthropic_key = os.getenv("ANTHROPIC_API_KEY")
-        gemini_key = os.getenv("GEMINI_API_KEY")
 
+        # 1. Groq (principal, gratis)
+        if groq_key:
+            try:
+                return await self._groq_call(prompt, system, max_tokens, temperature, response_format)
+            except Exception as e:
+                self.logger.warning(f"Error Groq: {e} → intentando Anthropic")
+
+        # 2. Anthropic (fallback)
         if anthropic_key:
             try:
                 import anthropic
                 client = anthropic.Anthropic(api_key=anthropic_key)
                 kwargs = {
-                    "model": model,
+                    "model": model or "claude-sonnet-4-20250514",
                     "max_tokens": max_tokens,
                     "temperature": temperature,
                     "messages": [{"role": "user", "content": prompt}],
@@ -58,18 +60,34 @@ class BaseAgent(ABC):
                 if system:
                     kwargs["system"] = system
                 response = client.messages.create(**kwargs)
-                text = response.content[0].text
-                return self._parse_response(text, response_format)
+                return self._parse_response(response.content[0].text, response_format)
             except Exception as e:
-                if "credit" in str(e).lower() or "balance" in str(e).lower():
-                    self.logger.warning("Sin créditos Anthropic → usando Gemini")
-                elif "ImportError" not in type(e).__name__:
-                    self.logger.warning(f"Error Anthropic: {e} → usando Gemini")
+                self.logger.warning(f"Error Anthropic: {e} → intentando OpenAI")
 
-        if gemini_key:
-            return await self._gemini_fallback(prompt, system, max_tokens, temperature, response_format)
-
+        # 3. OpenAI (último recurso)
         return await self._openai_fallback(prompt, system, max_tokens, temperature, response_format)
+
+    async def _groq_call(
+        self, prompt: str, system: str, max_tokens: int, temperature: float, response_format: str
+    ) -> str | dict:
+        """Llamada a Groq (Llama 3.3 70B). Gratis, rápido, sin rate limits agresivos."""
+        from groq import Groq
+
+        client = Groq(api_key=os.getenv("GROQ_API_KEY"))
+
+        messages = []
+        if system:
+            messages.append({"role": "system", "content": system})
+        messages.append({"role": "user", "content": prompt})
+
+        response = client.chat.completions.create(
+            model="llama-3.3-70b-versatile",
+            messages=messages,
+            max_tokens=max_tokens,
+            temperature=temperature,
+        )
+        text = response.choices[0].message.content
+        return self._parse_response(text, response_format)
 
     def _parse_response(self, text: str, response_format: str) -> str | dict:
         """Parsea la respuesta del LLM según el formato esperado."""
@@ -81,51 +99,15 @@ class BaseAgent(ABC):
                 text = text[3:]
             if text.endswith("```"):
                 text = text[:-3]
-            return json.loads(text.strip())
+            text = text.strip()
+            # Fallback: extraer JSON con regex si hay texto extra
+            if text and not text.startswith(("{", "[")):
+                import re
+                match = re.search(r'(\{[\s\S]*\}|\[[\s\S]*\])', text)
+                if match:
+                    text = match.group(1)
+            return json.loads(text)
         return text
-
-    async def _gemini_fallback(
-        self, prompt: str, system: str, max_tokens: int, temperature: float, response_format: str
-    ) -> str | dict:
-        """Fallback a Google Gemini con rate limiting y retry automático."""
-        global _gemini_last_call
-        elapsed = time.monotonic() - _gemini_last_call
-        if elapsed < _GEMINI_MIN_INTERVAL:
-            await asyncio.sleep(_GEMINI_MIN_INTERVAL - elapsed)
-        _gemini_last_call = time.monotonic()
-
-        import google.generativeai as genai
-        genai.configure(api_key=os.getenv("GEMINI_API_KEY"))
-
-        # Intentar con dos modelos (quotas independientes)
-        models_to_try = ["gemini-2.0-flash", "gemini-1.5-flash-8b"]
-        last_error = None
-
-        for model_name in models_to_try:
-            for attempt in range(3):  # Hasta 3 reintentos por modelo
-                try:
-                    model = genai.GenerativeModel(
-                        model_name=model_name,
-                        system_instruction=system if system else None,
-                        generation_config=genai.GenerationConfig(
-                            max_output_tokens=max_tokens,
-                            temperature=temperature,
-                        ),
-                    )
-                    response = model.generate_content(prompt)
-                    _gemini_last_call = time.monotonic()
-                    return self._parse_response(response.text, response_format)
-                except Exception as e:
-                    last_error = e
-                    err_str = str(e).lower()
-                    if "quota" in err_str or "429" in err_str or "rate" in err_str:
-                        wait = _GEMINI_MIN_INTERVAL * (2 ** attempt)  # 4s, 8s, 16s
-                        self.logger.warning(f"Gemini rate limit ({model_name}), reintentando en {wait:.0f}s...")
-                        await asyncio.sleep(wait)
-                    else:
-                        break  # Error no recuperable, probar siguiente modelo
-
-        raise RuntimeError(f"Gemini no disponible tras reintentos: {last_error}")
 
     async def _openai_fallback(
         self, prompt: str, system: str, max_tokens: int, temperature: float, response_format: str

@@ -70,7 +70,7 @@ class BaseAgent(ABC):
     async def _groq_call(
         self, prompt: str, system: str, max_tokens: int, temperature: float, response_format: str
     ) -> str | dict:
-        """Llamada a Groq (Llama 3.3 70B). Gratis, rápido, sin rate limits agresivos."""
+        """Llamada a Groq con cadena de modelos: 70B → 8B → gemma."""
         from groq import Groq
 
         client = Groq(api_key=os.getenv("GROQ_API_KEY"))
@@ -80,14 +80,37 @@ class BaseAgent(ABC):
             messages.append({"role": "system", "content": system})
         messages.append({"role": "user", "content": prompt})
 
-        response = client.chat.completions.create(
-            model="llama-3.3-70b-versatile",
-            messages=messages,
-            max_tokens=max_tokens,
-            temperature=temperature,
-        )
-        text = response.choices[0].message.content
-        return self._parse_response(text, response_format)
+        # Cadena de modelos Groq con distintos TPD para tolerar rate limits
+        models = [
+            "llama-3.3-70b-versatile",   # 100k TPD, mejor calidad
+            "llama-3.1-8b-instant",      # 500k TPD, rápido
+            "gemma2-9b-it",              # 500k TPD, fallback
+        ]
+
+        last_error = None
+        for model in models:
+            try:
+                response = client.chat.completions.create(
+                    model=model,
+                    messages=messages,
+                    max_tokens=max_tokens,
+                    temperature=temperature,
+                )
+                text = response.choices[0].message.content
+                return self._parse_response(text, response_format)
+            except Exception as e:
+                err_str = str(e)
+                last_error = e
+                # Si es rate limit, probar siguiente modelo
+                if "rate_limit" in err_str.lower() or "429" in err_str:
+                    self.logger.warning(f"Groq {model} rate limit → probando siguiente modelo")
+                    continue
+                # Otros errores también pasan al siguiente modelo
+                self.logger.warning(f"Groq {model} error: {e} → probando siguiente modelo")
+                continue
+
+        # Si todos los modelos fallaron
+        raise last_error if last_error else RuntimeError("Todos los modelos Groq fallaron")
 
     def _parse_response(self, text: str, response_format: str) -> str | dict:
         """Parsea la respuesta del LLM según el formato esperado."""

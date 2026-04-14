@@ -164,28 +164,23 @@ class CopywriterAgent(BaseAgent):
         sender = self._pick_sender()
         hook_context = self._build_hook_context(company)
 
-        tone_instructions = {
-            EmailTone.FORMAL: "Tono profesional y de usted. Lenguaje preciso, sin coloquialismos.",
-            EmailTone.FRIENDLY: "Tono cercano, de tú. Natural, como si escribiera un conocido del sector. Sin ser forzado.",
-            EmailTone.DIRECT: "Ir al grano. Primer párrafo = contexto en 1 frase. Segundo = qué hacemos. Tercero = CTA. Nada más.",
-            EmailTone.CONSULTATIVE: "Empezar con una pregunta que haga pensar. Posicionarse como experto que quiere entender su caso antes de proponer.",
-        }
-
         prompt = f"""{ARIGRA_CONTEXT}
 
 === TAREA ===
-Genera un email de prospección B2B para la siguiente empresa.
-El email debe parecer escrito por una persona real, no por una máquina.
+Redacta un email de prospección B2B profesional, formal y detallado para la siguiente empresa.
+El email debe transmitir seriedad, conocimiento del sector y aportar valor desde la primera línea.
+Debe estar escrito en un español impecable, sin faltas de ortografía ni errores gramaticales.
 
 === DESTINATARIO ===
 Empresa: {company.name}
 Sector: {company.sector.value if company.sector else 'no definido'}
 Tamaño: {company.size.value if company.size else 'no definido'} ({company.employee_count or '?'} empleados)
 Ciudad: {company.city or 'desconocida'}
-Productos/servicios que venden: {', '.join(company.products_services[:5]) if company.products_services else 'no conocidos'}
+Productos/servicios: {', '.join(company.products_services[:5]) if company.products_services else 'no conocidos'}
 Tecnologías/herramientas: {', '.join(company.technologies_used[:5]) if company.technologies_used else 'no conocidas'}
+Descripción del negocio: {company.description or 'sin descripción'}
+Pain points identificados: {', '.join(company.pain_points[:4]) if company.pain_points else 'no identificados'}
 Nombre contacto: {recipient_name or 'no disponible'}
-Rating Google: {company.google_rating or 'desconocido'} ({company.google_reviews or '?'} reseñas)
 
 === GANCHO PERSONALIZADO ===
 {hook_context}
@@ -196,29 +191,53 @@ Pain points del segmento: {', '.join(profile.key_pain_points)}
 Propuestas de valor a destacar: {', '.join(profile.value_propositions)}
 
 === INSTRUCCIONES DE REDACCIÓN ===
-Tono: {tone_instructions.get(profile.recommended_tone, tone_instructions[EmailTone.FRIENDLY])}
 Firmante: {sender['name']}, {sender['role']} de ARIGRA
 
-REGLAS ESTRICTAS:
-1. Asunto: máximo 50 caracteres. Que genere curiosidad SIN ser clickbait. Nunca usar "ARIGRA" en el asunto.
-2. Cuerpo: máximo 120 palabras. Cada frase debe aportar.
-3. Primer párrafo: demostrar que conoces algo concreto de SU empresa (producto, sector, situación).
-4. Segundo párrafo: conectar ESO con lo que ARIGRA puede hacer por ellos. Ser específico sobre qué tipo de análisis o predicción les serviría. NO enumerar los 3 pilares — elegir el más relevante.
-5. CTA: proponer una llamada breve de 15 min. Sin presión.
-6. PROHIBIDO: "solución integral", "líder en", "innovador", "disruptivo", "oferta", "gratis", "sin compromiso", emojis.
-7. PROHIBIDO: adjuntar links, PDFs o mencionar precios.
-8. El email debe sonar como si Hugo o Rodrigo lo hubieran escrito a mano.
-9. Si el destinatario tiene nombre, usarlo. Si no, empezar con "Buenas" o "Hola".
+TONO Y ESTILO:
+- Formal, profesional y serio. Tratamiento de USTED en todo el email, nunca de tú.
+- Lenguaje preciso, cuidado y natural. Como lo escribiría un consultor senior con años de experiencia.
+- Sin coloquialismos, sin tuteo, sin frases rotas, sin exclamaciones.
+- Ortografía y gramática perfectas en español de España (incluyendo tildes y signos correctos).
 
-Devuelve SOLO JSON:
+ESTRUCTURA OBLIGATORIA DEL CUERPO (entre 220 y 320 palabras):
+
+Párrafo 1 — Apertura personalizada (3-5 frases):
+- Saludo formal: "Estimado/a [nombre]:" si hay nombre, o "Estimados señores:" si no.
+- Demuestre conocimiento concreto de la empresa: mencione su sector específico, su tipo de productos/servicios, su ubicación o su descripción. NO use frases genéricas.
+- Contextualice el motivo del contacto de forma natural.
+
+Párrafo 2 — Observación sobre el sector o negocio (4-6 frases):
+- Comparta una observación concreta y valiosa sobre retos típicos de empresas como la suya (fotografía, hostelería, retail, etc. según corresponda).
+- Conecte esos retos con uno o dos de los pain points identificados arriba.
+- Muestre comprensión real del negocio; evite generalidades vacías.
+
+Párrafo 3 — Propuesta de ARIGRA (4-6 frases):
+- Explique con detalle UN enfoque específico de ARIGRA que encaje con su situación (análisis de ventas por producto, predicción de demanda estacional, análisis de portfolio, etc.).
+- Sea concreto: qué tipo de datos analizaría, qué decisiones podría apoyar, qué resultado típico obtienen empresas similares.
+- NO enumere los 3 pilares ni repita el contexto completo de ARIGRA.
+
+Párrafo 4 — Cierre con CTA (2-3 frases):
+- Proponga una llamada de entre 20 y 30 minutos para entender su situación en detalle, sin compromiso alguno.
+- Ofrezca flexibilidad de horario esta semana o la siguiente.
+- Despedida formal: "Reciba un cordial saludo," seguida del nombre y cargo en línea aparte.
+
+REGLAS ESTRICTAS:
+1. Asunto: entre 40 y 70 caracteres. Profesional, concreto y relevante. Nunca usar "ARIGRA" en el asunto ni signos de exclamación.
+2. PROHIBIDO usar: "solución integral", "líder en", "innovador", "disruptivo", "oferta", "gratis", "sin compromiso" como gancho, emojis, signos de exclamación, mayúsculas enfáticas.
+3. PROHIBIDO adjuntar enlaces, PDFs o mencionar precios.
+4. PROHIBIDO tutear. Siempre tratamiento de usted.
+5. Revise dos veces la ortografía: tildes (análisis, decisión, predicción), signos de interrogación y exclamación de apertura si los usa (nunca deben quedar huérfanos), uso correcto de "si/sí", "mas/más", "solo/sólo", "tu/tú".
+6. El cuerpo debe tener entre 220 y 320 palabras exactas.
+
+Devuelve SOLO JSON válido:
 {{
     "subject": "Asunto del email",
-    "body_text": "Cuerpo en texto plano con saltos de línea",
-    "body_html": "Cuerpo en HTML simple (solo <p>, <br>, <b>)",
-    "personalization_notes": "Qué datos de la empresa usaste para personalizar y por qué elegiste ese ángulo"
+    "body_text": "Cuerpo en texto plano con saltos de línea entre párrafos",
+    "body_html": "Cuerpo en HTML con etiquetas <p> para cada párrafo",
+    "personalization_notes": "Qué datos específicos de la empresa se usaron y por qué se eligió ese ángulo"
 }}"""
 
-        result = await self.llm_call(prompt, response_format="json", temperature=0.65)
+        result = await self.llm_call(prompt, response_format="json", temperature=0.5, max_tokens=1800)
 
         return EmailDraft(
             company_id=company.id or "",

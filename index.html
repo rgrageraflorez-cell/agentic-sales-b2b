@@ -1,0 +1,57 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>ARIGRA — Phase C Demo</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet" />
+    <style>
+      :root {
+        --color-navy: #0B1F3A;
+        --color-blue: #0E7CFF;
+        --color-cyan: #20C7D9;
+        --color-green: #16A34A;
+        --color-amber: #F59E0B;
+        --color-red: #DC2626;
+        --color-bg: #F8FAFC;
+        --color-surface: #FFFFFF;
+        --color-border: #E2E8F0;
+        --color-text: #1E293B;
+        --color-muted: #64748B;
+      }
+      html, body, #root { height: 100%; }
+      body {
+        margin: 0;
+        font-family: 'Inter', system-ui, -apple-system, sans-serif;
+        font-size: 14px;
+        font-weight: 400;
+        background: var(--color-bg);
+        color: var(--color-text);
+        -webkit-font-smoothing: antialiased;
+      }
+      h1, h2, h3, h4, h5, h6 { font-weight: 600; margin: 0; }
+      .card {
+        background: var(--color-surface);
+        border: 1px solid var(--color-border);
+        border-radius: 8px;
+        box-shadow: 0 1px 3px rgba(0,0,0,0.08);
+      }
+      .mono { font-family: 'Courier New', monospace; font-size: 12px; }
+      .fade-in { animation: fadeIn 150ms ease-in both; }
+      @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
+      .spinner {
+        width: 14px; height: 14px; border-radius: 50%;
+        border: 2px solid #cbd5e1; border-top-color: var(--color-blue);
+        animation: spin 700ms linear infinite; display: inline-block;
+      }
+      @keyframes spin { to { transform: rotate(360deg); } }
+    </style>
+    <script type="module" crossorigin src="./assets/index-3TCJV-o3.js"></script>
+  </head>
+  <body>
+    <div id="root"></div>
+  </body>
+</html>
